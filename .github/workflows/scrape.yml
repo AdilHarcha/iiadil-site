@@ -13,11 +13,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scrape iiadil.framer.website
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install puppeteer
+
+      - name: Scrape with Puppeteer
         run: |
-          mkdir -p public
-          wget --mirror --convert-links --adjust-extension --page-requisites --no-parent -e robots=off --timeout=60 --tries=3 --directory-prefix=public https://iiadil.framer.website/
-          if [ -d "public/iiadil.framer.website" ]; then cp -r public/iiadil.framer.website/* public/ && rm -rf public/iiadil.framer.website; fi
+          node << 'SCRIPT'
+          const puppeteer = require('puppeteer');
+          const fs = require('fs');
+          const path = require('path');
+          const https = require('https');
+          const url = require('url');
+
+          const BASE = 'https://iiadil.framer.website';
+          const OUT = 'public';
+          const visited = new Set();
+          const queue = ['/'];
+
+          async function download(fileUrl, dest) {
+            return new Promise((resolve) => {
+              const file = fs.createWriteStream(dest);
+              https.get(fileUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, r => {
+                r.pipe(file);
+                file.on('finish', () => { file.close(); resolve(); });
+              }).on('error', () => resolve());
+            });
+          }
+
+          (async () => {
+            const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
+            while (queue.length > 0) {
+              const pagePath = queue.shift();
+              if (visited.has(pagePath)) continue;
+              visited.add(pagePath);
+              const pageUrl = BASE + pagePath;
+              console.log('Scraping:', pageUrl);
+              const page = await browser.newPage();
+              try {
+                await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+                const html = await page.content();
+                const outPath = path.join(OUT, pagePath === '/' ? 'index.html' : pagePath.replace(/\/$/, '') + '.html');
+                fs.mkdirSync(path.dirname(outPath), { recursive: true });
+                fs.writeFileSync(outPath, html);
+                const links = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href')));
+                for (const link of links) {
+                  if (link && link.startsWith('/') && !visited.has(link)) queue.push(link);
+                }
+              } catch(e) { console.error('Error on', pageUrl, e.message); }
+              await page.close();
+            }
+            await browser.close();
+          })();
+          SCRIPT
 
       - name: Commit and push
         run: |
