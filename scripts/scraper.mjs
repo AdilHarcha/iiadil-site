@@ -1,72 +1,82 @@
-﻿import fs from 'fs';
-import path from 'path';
-import { load } from 'cheerio';
+﻿import { writeFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
 
-const BASE = 'https://iiadil.framer.website';
-const OUT = 'public';
+const BASE_URL = 'https://iiadil.framer.website'
+const OUT_DIR  = 'public'
+
 const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,*/*',
-  'Accept-Language': 'fr,en;q=0.9',
-};
-
-async function fetchPage(pagePath) {
-  const url = BASE + pagePath;
-  console.log('Fetching:', url);
-  const res = await fetch(url, { headers: HEADERS });
-  console.log('Status:', res.status, url);
-  if (!res.ok) return null;
-  return await res.text();
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
 }
 
-function extractFramerRoutes(html) {
-  const routes = new Set(['/']);
-  // Framer embeds routes as "path":"..." in JS bundles
-  const patterns = [
-    /"path":"(\/[^"]*?)"/g,
-    /"href":"(\/[^"]*?)"/g,
-    /href="(\/[^"#?][^"]*?)"/g,
-  ];
-  for (const re of patterns) {
-    let m;
-    while ((m = re.exec(html)) !== null) {
-      const p = m[1];
-      if (!p.includes('.') || p.endsWith('/')) routes.add(p.replace(/\/$/, '') || '/');
+async function fetchText(url) {
+  const res = await fetch(url, { headers: HEADERS })
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
+  return res.text()
+}
+
+function save(route, html) {
+  const dir = route === '/' ? OUT_DIR : join(OUT_DIR, ...route.replace(/^\//, '').split('/'))
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'index.html'), html, 'utf8')
+  console.log('saved ' + route)
+}
+
+function extractRoutes(bundleJs) {
+  const routes = new Set(['/'])
+  for (const m of bundleJs.matchAll(/"path"\s*:\s*"(\/[^"]+?)"/g)) {
+    const p = m[1]
+    if (p.startsWith('/:') || p.includes('*') || p === '/__framer__') continue
+    routes.add(p)
+  }
+  return [...routes]
+}
+
+function extractBundleUrls(indexHtml) {
+  const urls = []
+  for (const m of indexHtml.matchAll(/<script[^>]+src="([^"]+\.js[^"]*)"/g)) {
+    let src = m[1]
+    if (!src.startsWith('http')) src = src.startsWith('//') ? 'https:' + src : BASE_URL + src
+    urls.push(src)
+  }
+  return urls
+}
+
+async function main() {
+  mkdirSync(OUT_DIR, { recursive: true })
+  console.log('Fetching index.html...')
+  const indexHtml = await fetchText(BASE_URL + '/')
+  save('/', indexHtml)
+
+  const bundleUrls = extractBundleUrls(indexHtml)
+  console.log('Found ' + bundleUrls.length + ' JS bundles. Scanning for routes...')
+
+  let routes = ['/']
+  for (const url of bundleUrls) {
+    try {
+      const js = await fetchText(url)
+      const found = extractRoutes(js)
+      if (found.length > 1) {
+        routes = found
+        console.log('Routes: ' + found.join(', '))
+        break
+      }
+    } catch (e) {
+      console.warn('Skip bundle: ' + e.message)
     }
   }
-  return [...routes];
-}
 
-fs.mkdirSync(OUT, { recursive: true });
-
-// Step 1: fetch index to discover all routes
-const indexHtml = await fetchPage('/');
-if (!indexHtml) { console.error('Cannot fetch homepage'); process.exit(1); }
-
-fs.writeFileSync(path.join(OUT, 'index.html'), indexHtml);
-console.log('Saved: public/index.html');
-
-const routes = extractFramerRoutes(indexHtml);
-console.log('Routes found:', routes);
-
-// Step 2: fetch each discovered route
-const visited = new Set(['/']);
-for (const route of routes) {
-  if (visited.has(route)) continue;
-  visited.add(route);
-  try {
-    const html = await fetchPage(route);
-    if (!html) continue;
-    const outFile = path.join(OUT, route, 'index.html');
-    fs.mkdirSync(path.dirname(outFile), { recursive: true });
-    fs.writeFileSync(outFile, html);
-    console.log('Saved:', outFile, html.length, 'bytes');
-    // Discover more routes from this page
-    const moreRoutes = extractFramerRoutes(html);
-    for (const r of moreRoutes) {
-      if (!visited.has(r)) routes.push(r);
+  for (const route of routes) {
+    if (route === '/') continue
+    try {
+      const html = await fetchText(BASE_URL + route)
+      save(route, html)
+    } catch (e) {
+      console.warn('Skip ' + route + ': ' + e.message)
     }
-  } catch(e) { console.error('ERROR:', e.message); }
+  }
+  console.log('Done - ' + routes.length + ' pages.')
 }
 
-console.log('Done. Total pages scraped:', visited.size);
+main().catch(e => { console.error(e); process.exit(1) })
