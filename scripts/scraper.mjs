@@ -10,32 +10,63 @@ const HEADERS = {
   'Accept-Language': 'fr,en;q=0.9',
 };
 
-const visited = new Set();
-const queue = ['/'];
+async function fetchPage(pagePath) {
+  const url = BASE + pagePath;
+  console.log('Fetching:', url);
+  const res = await fetch(url, { headers: HEADERS });
+  console.log('Status:', res.status, url);
+  if (!res.ok) return null;
+  return await res.text();
+}
+
+function extractFramerRoutes(html) {
+  const routes = new Set(['/']);
+  // Framer embeds routes as "path":"..." in JS bundles
+  const patterns = [
+    /"path":"(\/[^"]*?)"/g,
+    /"href":"(\/[^"]*?)"/g,
+    /href="(\/[^"#?][^"]*?)"/g,
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const p = m[1];
+      if (!p.includes('.') || p.endsWith('/')) routes.add(p.replace(/\/$/, '') || '/');
+    }
+  }
+  return [...routes];
+}
+
 fs.mkdirSync(OUT, { recursive: true });
 
-while (queue.length > 0) {
-  const p = queue.shift();
-  if (visited.has(p)) continue;
-  visited.add(p);
-  const url = BASE + p;
-  console.log('Fetching:', url);
+// Step 1: fetch index to discover all routes
+const indexHtml = await fetchPage('/');
+if (!indexHtml) { console.error('Cannot fetch homepage'); process.exit(1); }
+
+fs.writeFileSync(path.join(OUT, 'index.html'), indexHtml);
+console.log('Saved: public/index.html');
+
+const routes = extractFramerRoutes(indexHtml);
+console.log('Routes found:', routes);
+
+// Step 2: fetch each discovered route
+const visited = new Set(['/']);
+for (const route of routes) {
+  if (visited.has(route)) continue;
+  visited.add(route);
   try {
-    const res = await fetch(url, { headers: HEADERS });
-    console.log('Status:', res.status, url);
-    if (!res.ok) { console.error('SKIP non-200'); continue; }
-    const html = await res.text();
-    const out = path.join(OUT, p === '/' ? 'index.html' : p.replace(/\/$/, '') + '/index.html');
-    fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, html);
-    console.log('Saved:', out, html.length, 'bytes');
-    const $ = load(html);
-    $('a[href]').each((_, el) => {
-      const href = $(el).attr('href');
-      if (href && href.startsWith('/') && !href.includes('.') && !visited.has(href)) {
-        queue.push(href);
-      }
-    });
+    const html = await fetchPage(route);
+    if (!html) continue;
+    const outFile = path.join(OUT, route, 'index.html');
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
+    fs.writeFileSync(outFile, html);
+    console.log('Saved:', outFile, html.length, 'bytes');
+    // Discover more routes from this page
+    const moreRoutes = extractFramerRoutes(html);
+    for (const r of moreRoutes) {
+      if (!visited.has(r)) routes.push(r);
+    }
   } catch(e) { console.error('ERROR:', e.message); }
 }
-console.log('Done. Pages scraped:', visited.size);
+
+console.log('Done. Total pages scraped:', visited.size);
