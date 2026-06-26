@@ -17,58 +17,44 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
+      - name: Install puppeteer
         run: npm install puppeteer
 
-      - name: Scrape with Puppeteer
+      - name: Write scraper script
         run: |
-          node << 'SCRIPT'
-          const puppeteer = require('puppeteer');
-          const fs = require('fs');
-          const path = require('path');
-          const https = require('https');
-          const url = require('url');
-
+          cat > scraper.mjs << 'EOF'
+          import puppeteer from 'puppeteer';
+          import fs from 'fs';
+          import path from 'path';
           const BASE = 'https://iiadil.framer.website';
           const OUT = 'public';
           const visited = new Set();
           const queue = ['/'];
-
-          async function download(fileUrl, dest) {
-            return new Promise((resolve) => {
-              const file = fs.createWriteStream(dest);
-              https.get(fileUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, r => {
-                r.pipe(file);
-                file.on('finish', () => { file.close(); resolve(); });
-              }).on('error', () => resolve());
-            });
+          const browser = await puppeteer.launch({ args: ['--no-sandbox','--disable-setuid-sandbox'] });
+          while (queue.length > 0) {
+            const p = queue.shift();
+            if (visited.has(p)) continue;
+            visited.add(p);
+            console.log('Scraping:', BASE + p);
+            const page = await browser.newPage();
+            try {
+              await page.goto(BASE + p, { waitUntil: 'networkidle2', timeout: 30000 });
+              const html = await page.content();
+              const out = path.join(OUT, p === '/' ? 'index.html' : p.replace(/\/$/, '') + '/index.html');
+              fs.mkdirSync(path.dirname(out), { recursive: true });
+              fs.writeFileSync(out, html);
+              const links = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href')));
+              for (const l of links) {
+                if (l && l.startsWith('/') && !visited.has(l)) queue.push(l);
+              }
+            } catch(e) { console.error('Error:', e.message); }
+            await page.close();
           }
+          await browser.close();
+          EOF
 
-          (async () => {
-            const browser = await puppeteer.launch({ args: ['--no-sandbox'] });
-            while (queue.length > 0) {
-              const pagePath = queue.shift();
-              if (visited.has(pagePath)) continue;
-              visited.add(pagePath);
-              const pageUrl = BASE + pagePath;
-              console.log('Scraping:', pageUrl);
-              const page = await browser.newPage();
-              try {
-                await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-                const html = await page.content();
-                const outPath = path.join(OUT, pagePath === '/' ? 'index.html' : pagePath.replace(/\/$/, '') + '.html');
-                fs.mkdirSync(path.dirname(outPath), { recursive: true });
-                fs.writeFileSync(outPath, html);
-                const links = await page.$$eval('a[href]', els => els.map(e => e.getAttribute('href')));
-                for (const link of links) {
-                  if (link && link.startsWith('/') && !visited.has(link)) queue.push(link);
-                }
-              } catch(e) { console.error('Error on', pageUrl, e.message); }
-              await page.close();
-            }
-            await browser.close();
-          })();
-          SCRIPT
+      - name: Run scraper
+        run: node scraper.mjs
 
       - name: Commit and push
         run: |
