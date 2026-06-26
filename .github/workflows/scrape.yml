@@ -12,63 +12,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: Write scraper script
-        run: |
-          cat > scraper.mjs << 'EOF'
-          import fs from 'fs';
-          import path from 'path';
-          import { load } from 'cheerio';
-
-          const BASE = 'https://iiadil.framer.website';
-          const OUT = 'public';
-          const HEADERS = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,*/*',
-            'Accept-Language': 'fr,en;q=0.9',
-          };
-
-          const visited = new Set();
-          const queue = ['/'];
-          fs.mkdirSync(OUT, { recursive: true });
-
-          while (queue.length > 0) {
-            const p = queue.shift();
-            if (visited.has(p)) continue;
-            visited.add(p);
-            const url = BASE + p;
-            console.log('Fetching:', url);
-            try {
-              const res = await fetch(url, { headers: HEADERS });
-              console.log('Status:', res.status, url);
-              if (!res.ok) { console.error('SKIP (non-200)'); continue; }
-              const html = await res.text();
-              const out = path.join(OUT, p === '/' ? 'index.html' : p.replace(/\/$/, '') + '/index.html');
-              fs.mkdirSync(path.dirname(out), { recursive: true });
-              fs.writeFileSync(out, html);
-              console.log('Saved:', out, html.length, 'bytes');
-              const $ = load(html);
-              $('a[href]').each((_, el) => {
-                const href = $(el).attr('href');
-                if (href && href.startsWith('/') && !href.includes('.') && !visited.has(href)) {
-                  queue.push(href);
-                }
-              });
-            } catch(e) { console.error('ERROR:', e.message); }
-          }
-          console.log('Done. Pages:', visited.size);
-          EOF
-
       - name: Install cheerio
         run: npm install cheerio
-
       - name: Run scraper
-        run: node scraper.mjs
-
+        run: node scripts/scraper.mjs
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
